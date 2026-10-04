@@ -7,16 +7,20 @@ from .const import (
   CONF_EMAIL,
   CONF_PASSWORD,
   CONF_ACCOUNT_ID,
-  CONF_LOCATION_ID,
   CONF_HOST,
   CONF_POLL_INTERVAL,
   CONF_TIMEZONE,
   CONF_MFA_TOTP,
+  CONF_ELECTRIC_RATE,
+  CONF_WATER_RATE,
+  CONF_ELECTRIC_BASE_CHARGE,
+  CONF_WATER_BASE_CHARGE,
   MIN_POLL_INTERVAL,
   MAX_POLL_INTERVAL
 )
 from .api import SmartHubAPI
 from .exceptions import SmartHubAuthenticationError, SmartHubConnectionError
+from .utils import sanitize_host
 
 from typing import Any
 from types import MappingProxyType
@@ -38,7 +42,7 @@ class SmartHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for SmartHub."""
 
     VERSION = 1
-    MINOR_VERSION = 1 # Updated to handle addition of TOTP, and TimeZone
+    MINOR_VERSION = 2 # v2: added unique_id (host_account_id) to dedup accounts across entries
 
     async def async_step_user(self, user_input=None) -> config_entries.ConfigFlowResult:
         """Handle the initial step."""
@@ -54,11 +58,17 @@ class SmartHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:
+                unique_id = f"{sanitize_host(user_input[CONF_HOST])}_{user_input[CONF_ACCOUNT_ID]}"
+                await self.async_set_unique_id(unique_id)
+
                 if self.source == config_entries.SOURCE_RECONFIGURE:
+                    self._abort_if_unique_id_mismatch()
                     return self.async_update_reload_and_abort(
                         self._get_reconfigure_entry(), data_updates=user_input
                     )
+
                 # else - create a new entry
+                self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title="SmartHub",
                     data=user_input,
@@ -88,6 +98,10 @@ class SmartHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                  )
                ),
                vol.Required(CONF_POLL_INTERVAL, default=DEFAULT_POLL_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=MIN_POLL_INTERVAL, max=MAX_POLL_INTERVAL)),
+               vol.Optional(CONF_ELECTRIC_RATE): vol.All(vol.Coerce(float), vol.Range(min=0)),
+               vol.Optional(CONF_ELECTRIC_BASE_CHARGE): vol.All(vol.Coerce(float), vol.Range(min=0)),
+               vol.Optional(CONF_WATER_RATE): vol.All(vol.Coerce(float), vol.Range(min=0)),
+               vol.Optional(CONF_WATER_BASE_CHARGE): vol.All(vol.Coerce(float), vol.Range(min=0)),
             }
         )
 
