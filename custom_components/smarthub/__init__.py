@@ -12,13 +12,16 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.components import persistent_notification
+import homeassistant.helpers.config_validation as cv
+import voluptuous as vol
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import entity_registry as er
 
 from .api import SmartHubAPI
 from .sensor import  SmartHubDataUpdateCoordinator
-from .const import DOMAIN, DEFAULT_POLL_INTERVAL
+from .const import DOMAIN, DEFAULT_POLL_INTERVAL, BACKFILL_DEFAULT_DAYS, SERVICE_BACKFILL
 from .utils import sanitize_host
 
 from datetime import timedelta
@@ -29,6 +32,48 @@ from datetime import timedelta
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+BACKFILL_SCHEMA = vol.Schema(
+    {vol.Optional("days", default=BACKFILL_DEFAULT_DAYS): vol.All(vol.Coerce(int), vol.Range(min=1, max=1100))}
+)
+
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Register the domain services."""
+
+    async def _backfill_entry(entry: ConfigEntry, days: int) -> None:
+        coordinator = entry.runtime_data
+        try:
+            results = await coordinator.async_backfill(days)
+        except Exception as e:  # report, never raise from a background task
+            _LOGGER.exception("SmartHub backfill failed for %s", entry.title)
+            persistent_notification.async_create(
+                hass, f"Backfill of {days} days failed for {entry.title}: {e}",
+                title="SmartHub backfill failed", notification_id=f"smarthub_backfill_{entry.entry_id}",
+            )
+            return
+        lines = [
+            f"- {r.get('industry')} {r.get('location')} {r.get('aggregation')}: "
+            f"{r.get('periods', 0)} periods, {r.get('first') or 'no data'} to {r.get('last') or '-'}"
+            for r in results
+        ]
+        persistent_notification.async_create(
+            hass, f"Requested {days} days for {entry.title}.\n" + "\n".join(lines),
+            title="SmartHub backfill finished", notification_id=f"smarthub_backfill_{entry.entry_id}",
+        )
+
+    async def _handle_backfill(call: ServiceCall) -> None:
+        days = call.data["days"]
+        for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+            # Minutes of API calls - run in the background so the call returns.
+            hass.async_create_background_task(
+                _backfill_entry(entry, days), f"smarthub_backfill_{entry.entry_id}"
+            )
+
+    hass.services.async_register(DOMAIN, SERVICE_BACKFILL, _handle_backfill, schema=BACKFILL_SCHEMA)
+    return True
 
 # Matches unique_ids produced by the pre-dedup-guard sensor code, where
 # config_entry.unique_id was always None: "None_{location_id}_energy".

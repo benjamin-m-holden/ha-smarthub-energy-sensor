@@ -26,6 +26,9 @@ MAX_RETRIES = 3
 RETRY_DELAY = 5  # seconds
 SESSION_TIMEOUT = 300  # 5 minutes - force session refresh
 HISTORICAL_IMPORT_DAYS = 90 # number of days for initial import
+BACKFILL_DEFAULT_DAYS = 548 # ~18 months, the reach of the SmartHub usage explorer
+BACKFILL_CHUNK_DAYS = 30 # days per poll request when backfilling
+SERVICE_BACKFILL = "backfill"
 
 # Sensor constants
 USAGE_SENSOR_KEY = "current_energy_usage"

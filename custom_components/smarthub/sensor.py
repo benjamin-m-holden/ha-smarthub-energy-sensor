@@ -1,6 +1,7 @@
 """SmartHub energy sensor platform."""
 from __future__ import annotations
 
+import asyncio
 import calendar
 import logging
 from datetime import datetime, timedelta, timezone
@@ -58,6 +59,7 @@ from .const import (
     ATTR_INDUSTRY,
     LOCATION_KEY,
     HISTORICAL_IMPORT_DAYS,
+    BACKFILL_CHUNK_DAYS,
     METER_NAME,
     INDUSTRY_ELECTRIC,
     INDUSTRY_WATER,
@@ -167,6 +169,9 @@ class SmartHubDataUpdateCoordinator(DataUpdateCoordinator):
         self.api = api
         self.account_id = config_entry.data.get('account_id','unknown')
         self._config_data = config_entry.data
+        # Serialises statistics writes: a backfill rewrites the whole series and
+        # must not interleave with a scheduled poll appending to it.
+        self._stats_lock = asyncio.Lock()
 
     def _positive_float_option(self, key: Optional[str]) -> Optional[float]:
         """Return a positive float config option, or None if unset/invalid."""
@@ -218,8 +223,9 @@ class SmartHubDataUpdateCoordinator(DataUpdateCoordinator):
             for location in locations:
               # Because SmartHub provides historical usage/cost with delay of a
               # number of hours we need to insert data into statistics.
-              await self._insert_statistics(location, Aggregation.HOURLY)
-              await self._insert_statistics(location, Aggregation.DAILY)
+              async with self._stats_lock:
+                await self._insert_statistics(location, Aggregation.HOURLY)
+                await self._insert_statistics(location, Aggregation.DAILY)
 
               # Fetch monthly information for entity value
               first_day_of_current_month = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -267,8 +273,65 @@ class SmartHubDataUpdateCoordinator(DataUpdateCoordinator):
     # https://github.com/tronikos/opower/ was used as a model for how to populate
     # hourly metrics when access to realtime information is not possible via
     # utility dashboards.
-    async def _insert_statistics(self, location, aggregation: Aggregation):
-        """Retrieve energy usage data asynchronously with retry logic. Always backfills the data overwriting the history based on the collection window."""
+    async def async_backfill(self, days: int) -> list[dict[str, Any]]:
+        """Re-import `days` of history for every location, rewriting each series.
+
+        The normal poll only ever appends after the newest statistic, so history
+        older than the first import (HISTORICAL_IMPORT_DAYS) is never fetched.
+        This fetches the whole window in BACKFILL_CHUNK_DAYS requests and rewrites
+        every statistic from a zero sum, which also repairs a series whose running
+        sum has drifted.
+        """
+        start_datetime = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)
+
+        self.api.token = None
+        locations = await self.api.get_service_locations()
+
+        results = []
+        for location in locations:
+            for aggregation in (Aggregation.HOURLY, Aggregation.DAILY):
+                async with self._stats_lock:
+                    result = await self._insert_statistics(location, aggregation, backfill_start=start_datetime)
+                result.update(location=location.id, industry=location.industry, aggregation=aggregation.label)
+                _LOGGER.info("SmartHub backfill: %s", result)
+                results.append(result)
+        return results
+
+    async def _fetch_chunked(self, location, aggregation: Aggregation, start_datetime: datetime) -> Dict[str, Any]:
+        """Fetch usage from start_datetime to now in BACKFILL_CHUNK_DAYS requests."""
+        merged: Dict[str, Any] = {"USAGE": []}
+        now = datetime.now()
+        chunk_start = start_datetime
+        while chunk_start < now:
+            chunk_end = min(chunk_start + timedelta(days=BACKFILL_CHUNK_DAYS), now)
+            data = await self.api.get_energy_data(
+                location=location, aggregation=aggregation,
+                start_datetime=chunk_start, end_datetime=chunk_end,
+            ) or {}
+            merged["USAGE"].extend(data.get("USAGE") or [])
+            if "USAGE_RETURN" in data:
+                merged.setdefault("USAGE_RETURN", []).extend(data.get("USAGE_RETURN") or [])
+            if data.get(METER_NAME):
+                merged[METER_NAME] = data[METER_NAME]
+            chunk_start = chunk_end
+        return merged
+
+    @staticmethod
+    def _dedupe_reads(reads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """One read per reading_time, in time order.
+
+        Overlapping request windows (and the API itself) can return the same
+        period twice; adding both into the running sum double counts it.
+        """
+        by_time = {read["reading_time"]: read for read in reads}
+        return [by_time[t] for t in sorted(by_time)]
+
+    async def _insert_statistics(self, location, aggregation: Aggregation, backfill_start: Optional[datetime] = None) -> dict[str, Any]:
+        """Retrieve energy usage data asynchronously with retry logic. Always backfills the data overwriting the history based on the collection window.
+
+        With backfill_start, ignore existing statistics and rewrite the series
+        from that date with sums starting at zero.
+        """
         stat_prefix = INDUSTRY_STAT_PREFIX[location.industry]
         industry_label = INDUSTRY_LABEL[location.industry]
         spec = INDUSTRY_SENSOR_SPEC[location.industry]
@@ -326,7 +389,15 @@ class SmartHubDataUpdateCoordinator(DataUpdateCoordinator):
         _LOGGER.debug("last_stat for %s: %s", aggregation.label, last_stat)
 
         smarthub_data = {}
-        if not last_stat:
+        if backfill_start is not None:
+            _LOGGER.info("Backfilling %s statistics for %s from %s", aggregation.label, consumption_statistic_id, backfill_start)
+            consumption_sum = 0.0
+            return_sum      = 0.0
+            cost_sum        = 0.0
+            last_stats_time = None
+            cost_last_stats_time = None
+            smarthub_data = await self._fetch_chunked(location, aggregation, backfill_start)
+        elif not last_stat:
             _LOGGER.debug("Updating %s statistic for the first time", aggregation.label)
             consumption_sum = 0.0
             return_sum      = 0.0
@@ -363,7 +434,7 @@ class SmartHubDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug(
                     "Statistics migration completed. Skipping update for now"
                 )
-                return
+                return {}
 
             # Update reads...
             # Load read data for use in populating statistics
@@ -378,7 +449,7 @@ class SmartHubDataUpdateCoordinator(DataUpdateCoordinator):
             if not smarthub_data or not smarthub_data.get("USAGE"):
               _LOGGER.warning("No data received from SmartHub API for location %s to populate historical %s stats", location, aggregation.label)
               # No new data to record in statatistics
-              return
+              return {}
 
             start = smarthub_data.get("USAGE")[0].get("reading_time")
             _LOGGER.debug("Getting %s statistics at: %s", aggregation.label, start)
@@ -401,7 +472,14 @@ class SmartHubDataUpdateCoordinator(DataUpdateCoordinator):
                         return_statistic_id,
                         cost_statistic_id,
                     },
-                    aggregation.period,
+                    # Always "hour": every external statistic, daily included, is
+                    # stored as rows in the hourly table. Asking for "day" makes
+                    # the recorder reduce rows into LOCAL-midnight buckets, so a
+                    # reading stamped at UTC midnight (water does this) comes back
+                    # with an earlier bucket start, passes the "newer than last
+                    # stat" test below, and is added to the sum again on every
+                    # poll - the daily water series ran ~5x high.
+                    "hour",
                     None,
                     {"sum"},
                 )
@@ -439,7 +517,7 @@ class SmartHubDataUpdateCoordinator(DataUpdateCoordinator):
         return_statistics      = []
         cost_statistics        = []
 
-        for cost_read in smarthub_data.get("USAGE", []):
+        for cost_read in self._dedupe_reads(smarthub_data.get("USAGE") or []):
             start = cost_read.get("reading_time")
             consumption_state = max(0, cost_read.get("consumption"))
 
@@ -467,7 +545,7 @@ class SmartHubDataUpdateCoordinator(DataUpdateCoordinator):
                     StatisticData(start=start, state=cost_state, sum=cost_sum)
                 )
 
-        for return_read in smarthub_data.get("USAGE_RETURN", []):
+        for return_read in self._dedupe_reads(smarthub_data.get("USAGE_RETURN") or []):
             start = return_read.get("reading_time")
             if last_stats_time is not None and start.timestamp() <= last_stats_time:
                 continue
@@ -517,6 +595,14 @@ class SmartHubDataUpdateCoordinator(DataUpdateCoordinator):
           async_add_external_statistics(
             self.hass, cost_metadata, cost_statistics
           )
+
+        return {
+            "statistic_id": consumption_statistic_id,
+            "periods": len(consumption_statistics),
+            "first": consumption_statistics[0]["start"].isoformat() if consumption_statistics else None,
+            "last": consumption_statistics[-1]["start"].isoformat() if consumption_statistics else None,
+            "total": consumption_sum,
+        }
 
 
 class SmartHubUsageSensor(CoordinatorEntity, SensorEntity):

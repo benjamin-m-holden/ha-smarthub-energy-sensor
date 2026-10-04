@@ -518,7 +518,7 @@ class SmartHubAPI:
         except ClientError as e:
             raise SmartHubConnectionError(f"Connection error during User_data request: {e}") from e
 
-    async def get_energy_data(self, location, aggregation:Aggregation, start_datetime=None) -> Optional[Dict[str, Any]]:
+    async def get_energy_data(self, location, aggregation:Aggregation, start_datetime=None, end_datetime=None) -> Optional[Dict[str, Any]]:
         """
         Retrieve energy usage data asynchronously with retry logic.
 
@@ -533,7 +533,8 @@ class SmartHubAPI:
         # Calculate startDateTime and endDateTime
         now = datetime.now()
         # Get data since specified start (or last 30 days) as of midnight yesterday
-        end_datetime = now.replace(minute=0, second=0, microsecond=0)
+        if end_datetime is None:
+          end_datetime = now.replace(minute=0, second=0, microsecond=0)
         if start_datetime is None:
           # fetch data from last period
           start_datetime = end_datetime - timedelta(days=30)
