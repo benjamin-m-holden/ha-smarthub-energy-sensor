@@ -2,7 +2,7 @@
 import pytest
 from custom_components.smarthub import async_setup_entry
 from custom_components.smarthub.api import SmartHubAPI, SmartHubLocation
-from custom_components.smarthub.const import ELECTRIC_SERVICE
+from custom_components.smarthub.const import INDUSTRY_ELECTRIC, INDUSTRY_WATER
 
 @pytest.fixture
 def api_instance():
@@ -20,7 +20,7 @@ def test_parse_locations(api_instance):
     """Test parsing location description."""
     test_data = [
       { # INACTIVE
-        'customer': 'XXXXXXXX', 'customerName': 'CUSTOMER_NAME', 'additionalCustomerName': 'ADDITIONAL_CUSTOMER_NAME', 'account': 'ACCOUNT', 'address': 'ADDRESS, CITY, STATE ZIP_CODE', 'email': 'USER_ID', 'inactive': True, 'primaryServiceLocationId': 'LOCATION_ID',
+        'customer': 'XXXXXXXX', 'customerName': 'CUSTOMER_NAME', 'additionalCustomerName': 'ADDITIONAL_CUSTOMER_NAME', 'account': '123456', 'address': 'ADDRESS, CITY, STATE ZIP_CODE', 'email': 'USER_ID', 'inactive': True, 'primaryServiceLocationId': 'LOCATION_ID',
         'serviceLocationIdToServiceLocationSummary': {
         'LOCATION_ID': {
            'id': {'srvLocNbr': "LOCATION_ID", 'serviceLocation': 'LOCATION_ID'},
@@ -44,7 +44,7 @@ def test_parse_locations(api_instance):
         'serviceToProviders': {'ELEC': ['NOVEC']}, 'serviceLocationToProviders': {"LOCATION_ID": ['NOVEC']}, 'consumerClassCode': '', 'providerOrServiceDescription': 'NOVEC Electric Service', 'services': ['ELEC']
       },
       {
-        'customer': 'XXXXXXXX', 'customerName': 'CUSTOMER_NAME', 'additionalCustomerName': 'ADDITIONAL_CUSTOMER_NAME', 'account': 'ACCOUNT', 'address': 'ADDRESS, CITY, STATE ZIP_CODE', 'email': 'USER_ID', 'inactive': False, 'primaryServiceLocationId': 'LOCATION_ID',
+        'customer': 'XXXXXXXX', 'customerName': 'CUSTOMER_NAME', 'additionalCustomerName': 'ADDITIONAL_CUSTOMER_NAME', 'account': '123456', 'address': 'ADDRESS, CITY, STATE ZIP_CODE', 'email': 'USER_ID', 'inactive': False, 'primaryServiceLocationId': 'LOCATION_ID',
         'serviceLocationIdToServiceLocationSummary': {
         'LOCATION_ID': {
            'id': {'srvLocNbr': "LOCATION_ID", 'serviceLocation': 'LOCATION_ID'},
@@ -68,7 +68,7 @@ def test_parse_locations(api_instance):
         'serviceToProviders': {'ELEC': ['NOVEC']}, 'serviceLocationToProviders': {"LOCATION_ID": ['NOVEC']}, 'consumerClassCode': '', 'providerOrServiceDescription': 'NOVEC Electric Service', 'services': ['ELEC']
       },
       {
-        'customer': 'XXXXXX1', 'customerName': 'CUSTOMER2', 'additionalCustomerName': 'CUSTOMER2 DISPLAY NAME', 'account': 'ACCOUNT1', 'address': 'ADDRESS, CITY, STATE ZIP_CODE', 'email': 'USER_ID', 'inactive': False, 'primaryServiceLocationId': 'LOCATION_ID2',
+        'customer': 'XXXXXX1', 'customerName': 'CUSTOMER2', 'additionalCustomerName': 'CUSTOMER2 DISPLAY NAME', 'account': '123456', 'address': 'ADDRESS, CITY, STATE ZIP_CODE', 'email': 'USER_ID', 'inactive': False, 'primaryServiceLocationId': 'LOCATION_ID2',
         'serviceLocationIdToServiceLocationSummary': {
           'LOCATION_ID2': {
             'id': {'srvLocNbr': 'LOCATION_ID2', 'serviceLocation': 'LOCATION_ID2'},
@@ -93,7 +93,7 @@ def test_parse_locations(api_instance):
         'serviceToProviders': {'ELEC': ['1ELEC']}, 'serviceLocationToProviders': {'LOCATION_ID2': ['1ELEC']}, 'consumerClassCode': '', 'providerOrServiceDescription': 'Electric Service', 'services': ['ELEC']
       },
       {
-          "customer": "********", "customerName": "****** * *****", "additionalCustomerName": "********* * *****", "account": "*********", "address": "*** ******* ****** ** *, ****, ** *****", "email": "***.*****@**.***", "inactive": False, "primaryServiceLocationId": "*******",
+          "customer": "********", "customerName": "****** * *****", "additionalCustomerName": "********* * *****", "account": "123456", "address": "*** ******* ****** ** *, ****, ** *****", "email": "***.*****@**.***", "inactive": False, "primaryServiceLocationId": "*******",
           "serviceLocationIdToServiceLocationSummary": {
             "*******": {
               "id": {"srvLocNbr": "*******", "serviceLocation": "*******" },
@@ -120,7 +120,7 @@ def test_parse_locations(api_instance):
           "services": ["1ELEC"]
         },
         {
-            'customer': 'YYYYYYYY', 'customerName': 'Customer', 'account': 'XXXXXXX', 'address': 'Address', 'email': '**********', 'inactive': False, 'primaryServiceLocationId': '5XX12XX0YY',
+            'customer': 'YYYYYYYY', 'customerName': 'Customer', 'account': '123456', 'address': 'Address', 'email': '**********', 'inactive': False, 'primaryServiceLocationId': '5XX12XX0YY',
             'serviceLocationIdToServiceLocationSummary': {
               '5XX12XX0YY': {
                 'id': {'srvLocNbr': '5XX12XX0YY', 'serviceLocation': '5XX12XX0YY'},
@@ -152,27 +152,41 @@ def test_parse_locations(api_instance):
     expected_locations = [
       SmartHubLocation(
         id="LOCATION_ID",
-        service=ELECTRIC_SERVICE,
+        service=INDUSTRY_ELECTRIC.lower(),
         description="",
         provider="NOVEC Electric Service",
+        industry=INDUSTRY_ELECTRIC,
       ),
       SmartHubLocation(
         id="LOCATION_ID2",
-        service=ELECTRIC_SERVICE,
+        service=INDUSTRY_ELECTRIC.lower(),
         description="NICKNAME",
         provider="Electric Service",
+        industry=INDUSTRY_ELECTRIC,
       ),
       SmartHubLocation(
         id="*******",
-        service=ELECTRIC_SERVICE,
+        service=INDUSTRY_ELECTRIC.lower(),
         description="",
         provider="Electric Service",
+        industry=INDUSTRY_ELECTRIC,
       ),
       SmartHubLocation(
         id="5XX12XX0YY",
-        service=ELECTRIC_SERVICE,
+        service=INDUSTRY_ELECTRIC.lower(),
         description="",
         provider="3ELEC",
+        industry=INDUSTRY_ELECTRIC,
+      ),
+      # "5XX12XX0YY" is a combined-key "City Utilities" entry that also
+      # advertises WATER (services=['WATER', ...]) - discovery now finds
+      # this water location too, right after that entry's electric one.
+      SmartHubLocation(
+        id="5XX12XX0YY",
+        service=INDUSTRY_WATER.lower(),
+        description="",
+        provider="1WATR",
+        industry=INDUSTRY_WATER,
       ),
     ]
 
@@ -185,7 +199,7 @@ def test_parse_locations_cvea(api_instance):
     """Test parsing CVEA location with custom service codes and descriptions."""
     test_data = [
       {
-        'customer': 'XXXXXX', 'customerName': 'CVEA_USER', 'account': '12345', 'inactive': False,
+        'customer': 'XXXXXX', 'customerName': 'CVEA_USER', 'account': '123456', 'inactive': False,
         'serviceLocationToUserDataServiceLocationSummaries': {
           'LOC_VALDEZ': [
             {'services': ['VELEC'], 'id': {'srvLocNbr': 'LOC_VALDEZ'}, 'description': 'Valdez Home'}
@@ -211,15 +225,17 @@ def test_parse_locations_cvea(api_instance):
     
     # Check Valdez location
     valdez = next(l for l in result if l.id == 'LOC_VALDEZ')
-    assert valdez.service == ELECTRIC_SERVICE
+    assert valdez.service == INDUSTRY_ELECTRIC.lower()
     assert valdez.description == 'Valdez Home'
     assert valdez.provider == 'CVEA Valdez'
+    assert valdez.industry == INDUSTRY_ELECTRIC
 
     # Check Glennallen location
     glenn = next(l for l in result if l.id == 'LOC_GLENNALLEN')
-    assert glenn.service == ELECTRIC_SERVICE
+    assert glenn.service == INDUSTRY_ELECTRIC.lower()
     assert glenn.description == 'Glennallen Shop'
     assert glenn.provider == 'CVEA Glennallen'
+    assert glenn.industry == INDUSTRY_ELECTRIC
 
 
 def compare_SmartHubLocation(a: SmartHubLocation, b: SmartHubLocation):
@@ -229,3 +245,4 @@ def compare_SmartHubLocation(a: SmartHubLocation, b: SmartHubLocation):
     assert a.service == b.service
     assert a.description == b.description
     assert a.provider == b.provider
+    assert a.industry == b.industry

@@ -17,9 +17,7 @@ from .const import (
     MAX_RETRIES,
     RETRY_DELAY,
     SESSION_TIMEOUT,
-    ELECTRIC_SERVICE,
-    SUPPORTED_SERVICES,
-    FALLBACK_SERVICES,
+    INDUSTRY_DISCOVERY,
     METER_NAME,
 )
 from .exceptions import (
@@ -85,15 +83,17 @@ class SmartHubLocation():
         service: str,
         description: str,
         provider: str,
+        industry: str,
     )  -> None:
         """Initialize the SmartHubLocation."""
         self.id = id
         self.service = service
         self.description = description
         self.provider = provider
+        self.industry = industry
 
     def __str__(self):
-        return f"[SmartHubLocation: '{self.id}' '{self.service}' '{self.description}']"
+        return f"[SmartHubLocation: '{self.id}' '{self.service}' '{self.description}' '{self.industry}']"
 
 class SmartHubAPI:
     """Class to interact with the SmartHub API."""
@@ -174,12 +174,13 @@ class SmartHubAPI:
 
         return parsed_data
 
-    def parse_usage(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def parse_usage(self, data: Dict[str, Any], industry: str) -> Optional[Dict[str, Any]]:
         """
         Parse the JSON data and extract the last data point for usage.
 
         Args:
             data: The JSON data as a Python dictionary.
+            industry: The industry (e.g. "ELECTRIC", "WATER") to extract from the response.
 
         Returns:
             A dictionary containing the "USAGE" with a list of parsed data and metadata, or an empty dictionary if not found.
@@ -193,13 +194,13 @@ class SmartHubAPI:
             if not isinstance(data, dict):
                 raise SmartHubDataError("Invalid data format: expected dictionary")
 
-            # Locate the "ELECTRIC" data
-            electric_data = data.get("data", {}).get("ELECTRIC", [])
-            if len(electric_data) == 0:
-              _LOGGER.warning("No ELECTRIC data found in response")
+            # Locate the industry's data
+            industry_data = data.get("data", {}).get(industry, [])
+            if len(industry_data) == 0:
+              _LOGGER.warning("No %s data found in response", industry)
               _LOGGER.debug(data)
 
-            for entry in electric_data:
+            for entry in industry_data:
                 # Find the entry with type "USAGE"
                 if entry.get("type","") == "USAGE":
                     _LOGGER.debug("Usage: %s", entry)
@@ -295,11 +296,20 @@ class SmartHubAPI:
           #  "services"
 
         locations = []
+        seen_location_industries = set()  # (location_id, industry) pairs already added
         _LOGGER.debug(location_json)
 
         for entry in location_json:
           if entry.get("inactive", False): # assume active by default
             continue # Don't include inactive accounts in list
+
+          # A single SmartHub login can have multiple accounts (e.g. a house
+          # account and a separate irrigation-meter account); get_service_locations()
+          # returns all of them. Only build locations for the account this
+          # SmartHubAPI instance is configured for, or a multi-account setup
+          # would pull every other account's locations into each other's entries.
+          if str(entry.get("account")) != str(self.account_id):
+            continue
 
           services = entry.get("services",[])
           serviceToProviders = entry.get("serviceToProviders", {})
@@ -307,36 +317,45 @@ class SmartHubAPI:
           serviceLocationToUserDataServiceLocationSummaries = entry.get("serviceLocationToUserDataServiceLocationSummaries", {})
           providerOrServiceDescription = entry.get("providerToDescription",{})
 
-          # Loop through the locations looking for the service description `ELECTRIC_SERVICE` which maps the service key - usually ELEC, but sometimes 1ELEC
-          electric_service_keys = {
-                service for service, desc in serviceToServiceDescription.items()
-                if isinstance(desc, str) and ELECTRIC_SERVICE.lower() in desc.lower()
-          }
+          for industry, discovery in INDUSTRY_DISCOVERY.items():
+            match_text = discovery["service_description_match"]
+            fallback_services = discovery["fallback_services"]
 
-          # Some smarthub systems don't return 'Electric Service' as a distinct entity. hsvutil.smarthub.coop returns
-          # 'serviceToServiceDescription': {'WATER|NGAS|ELEC|SEWER|TRASH': 'City Utilities'},
-          for fallback in FALLBACK_SERVICES:
-            if fallback in services:
-              electric_service_keys.add(fallback)
+            # Loop through the locations looking for the service description that maps the
+            # service key for this industry - usually a short code like ELEC, but sometimes 1ELEC
+            industry_service_keys = {
+                  service for service, desc in serviceToServiceDescription.items()
+                  if isinstance(desc, str) and match_text.lower() in desc.lower()
+            }
 
-          for electric_service in electric_service_keys:
-              electrical_providers = serviceToProviders.get(electric_service,["unknown"])
-              electrical_provider = electrical_providers[0] if electrical_providers else "unknown"
-              for locationID, serviceDescriptions in serviceLocationToUserDataServiceLocationSummaries.items():
-                for serviceDescription in serviceDescriptions:
-                  # for now only support electric service type
-                  if any(service in [electric_service] for service in serviceDescription.get("services",[])):
-                    # Try to find a good description
-                    description = serviceDescription.get("description", "")
+            # Some smarthub systems don't return a distinct service description entity. hsvutil.smarthub.coop returns
+            # 'serviceToServiceDescription': {'WATER|NGAS|ELEC|SEWER|TRASH': 'City Utilities'},
+            for fallback in fallback_services:
+              if fallback in services:
+                industry_service_keys.add(fallback)
 
-                    locations.append(
-                      SmartHubLocation(
-                        id=locationID,
-                        service=ELECTRIC_SERVICE,
-                        description=description,
-                        provider=providerOrServiceDescription.get(electrical_provider,electrical_provider),
+            for industry_service in industry_service_keys:
+                providers = serviceToProviders.get(industry_service,["unknown"])
+                provider = providers[0] if providers else "unknown"
+                for locationID, serviceDescriptions in serviceLocationToUserDataServiceLocationSummaries.items():
+                  for serviceDescription in serviceDescriptions:
+                    if any(service in [industry_service] for service in serviceDescription.get("services",[])):
+                      if (locationID, industry) in seen_location_industries:
+                        continue
+                      seen_location_industries.add((locationID, industry))
+
+                      # Try to find a good description
+                      description = serviceDescription.get("description", "")
+
+                      locations.append(
+                        SmartHubLocation(
+                          id=locationID,
+                          service=industry.lower(),
+                          description=description,
+                          provider=providerOrServiceDescription.get(provider,provider),
+                          industry=industry,
+                        )
                       )
-                    )
 
         return locations
 
@@ -499,7 +518,7 @@ class SmartHubAPI:
         except ClientError as e:
             raise SmartHubConnectionError(f"Connection error during User_data request: {e}") from e
 
-    async def get_energy_data(self, location, aggregation:Aggregation, start_datetime=None) -> Optional[Dict[str, Any]]:
+    async def get_energy_data(self, location, aggregation:Aggregation, start_datetime=None, end_datetime=None) -> Optional[Dict[str, Any]]:
         """
         Retrieve energy usage data asynchronously with retry logic.
 
@@ -514,7 +533,8 @@ class SmartHubAPI:
         # Calculate startDateTime and endDateTime
         now = datetime.now()
         # Get data since specified start (or last 30 days) as of midnight yesterday
-        end_datetime = now.replace(minute=0, second=0, microsecond=0)
+        if end_datetime is None:
+          end_datetime = now.replace(minute=0, second=0, microsecond=0)
         if start_datetime is None:
           # fetch data from last period
           start_datetime = end_datetime - timedelta(days=30)
@@ -529,7 +549,7 @@ class SmartHubAPI:
             "includeDemand": False,
             "serviceLocationNumber": location.id,
             "accountNumber": self.account_id,
-            "industries": ["ELECTRIC"],
+            "industries": [location.industry],
             "startDateTime": str(start_timestamp),
             "endDateTime": str(end_timestamp),
         }
@@ -593,7 +613,7 @@ class SmartHubAPI:
                             return None
                     elif status == "COMPLETE":
                         _LOGGER.debug("Successfully retrieved energy data")
-                        return self.parse_usage(response_json)
+                        return self.parse_usage(response_json, location.industry)
                     else:
                         _LOGGER.warning("Unexpected status in response: %s", status)
                         return None

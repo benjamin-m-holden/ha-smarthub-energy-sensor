@@ -15,3 +15,19 @@ refresh_authentication:
     entity:
       domain: sensor
       integration: smarthub
+backfill:
+  name: Backfill history
+  description: >-
+    Re-import usage history for every SmartHub account, rewriting the hourly and
+    daily statistics from that many days ago. Runs in the background; a
+    notification reports how far back the utility actually had data.
+  fields:
+    days:
+      name: Days
+      description: How many days back to fetch. 548 is about 18 months.
+      default: 548
+      selector:
+        number:
+          min: 1
+          max: 1100
+          unit_of_measurement: days

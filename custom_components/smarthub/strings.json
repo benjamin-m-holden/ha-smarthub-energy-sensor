@@ -9,12 +9,20 @@
           "account_id": "Account ID",
           "host": "SmartHub Host",
           "timezone": "Timezone for power company",
-          "mfa_totp": "MFA TOTP Seed"
+          "mfa_totp": "MFA TOTP Seed",
+          "electric_rate": "Electric rate (per kWh)",
+          "electric_base_charge": "Electric fixed monthly charge",
+          "water_rate": "Water rate (per gallon)",
+          "water_base_charge": "Water fixed monthly charge"
         },
         "data_description" : {
           "host": "e.g XXXXXX.smarthub.coop",
           "timezone": "Timezone for power company",
-          "mfa_totp": "MFA TOTP Seed - only required if using MFA"
+          "mfa_totp": "MFA TOTP Seed - only required if using MFA",
+          "electric_rate": "Optional. SmartHub does not report cost, so enter your price per kWh to generate a cost statistic for the Energy dashboard. Leave blank for no cost tracking.",
+          "electric_base_charge": "Optional. Fixed monthly charge billed regardless of usage (service availability / base / meter charge). Spread across the month so cost totals match your bill.",
+          "water_rate": "Optional. Enter your price per gallon to generate a water cost statistic. Leave blank for no cost tracking.",
+          "water_base_charge": "Optional. Fixed monthly water charge billed regardless of usage. If sewer is billed on water volume, include the sewer base charge here too."
         }
       }
     },
@@ -25,7 +33,8 @@
       "unknown": "Unexpected error occurred. Please check the logs."
     },
     "abort": {
-      "already_configured": "SmartHub integration is already configured for this account and host."
+      "already_configured": "SmartHub integration is already configured for this account and host.",
+      "unique_id_mismatch": "This entry cannot be reconfigured to a different account or host. Add a new integration entry instead."
     }
   }
 }
