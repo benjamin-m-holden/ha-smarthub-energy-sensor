@@ -516,3 +516,58 @@ async def async_wait_recording_done(hass) -> None:
     await hass.async_block_till_done()
     await hass.async_add_executor_job(get_instance(hass).block_till_done)
     await hass.async_block_till_done()
+
+
+async def test_coordinator_pending_keeps_last_reading(
+    recorder_mock: Recorder,
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_smarthub_api: AsyncMock,
+) -> None:
+    """A request SmartHub never finishes (get_energy_data -> None) keeps the last value."""
+    location = SmartHubLocation(
+        id="11111",
+        service=INDUSTRY_ELECTRIC.lower(),
+        description="test location",
+        provider="test provider",
+        industry=INDUSTRY_ELECTRIC,
+    )
+    mock_smarthub_api.get_service_locations.return_value = [location]
+    mock_smarthub_api.get_energy_data.return_value = None
+
+    coordinator = SmartHubDataUpdateCoordinator(hass, api=mock_smarthub_api, update_interval=timedelta(minutes=720), config_entry=mock_config_entry)
+
+    from custom_components.smarthub.sensor import _location_data_key
+    key = _location_data_key(location)
+    previous = {"usage": 123.0, "location": location}
+    coordinator.data = {key: previous}
+
+    result = await coordinator._async_update_data()
+
+    assert result[key] is previous
+
+
+async def test_coordinator_pending_without_previous_fails_cleanly(
+    recorder_mock: Recorder,
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_smarthub_api: AsyncMock,
+) -> None:
+    """With nothing to keep, an unfinished request fails the update without an AttributeError."""
+    from homeassistant.helpers.update_coordinator import UpdateFailed
+
+    mock_smarthub_api.get_service_locations.return_value = [
+      SmartHubLocation(
+        id="11111",
+        service=INDUSTRY_ELECTRIC.lower(),
+        description="test location",
+        provider="test provider",
+        industry=INDUSTRY_ELECTRIC,
+      )
+    ]
+    mock_smarthub_api.get_energy_data.return_value = None
+
+    coordinator = SmartHubDataUpdateCoordinator(hass, api=mock_smarthub_api, update_interval=timedelta(minutes=720), config_entry=mock_config_entry)
+
+    with pytest.raises(UpdateFailed, match="did not finish"):
+        await coordinator._async_update_data()

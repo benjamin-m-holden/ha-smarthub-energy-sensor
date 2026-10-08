@@ -234,6 +234,24 @@ class SmartHubDataUpdateCoordinator(DataUpdateCoordinator):
 
               data_key = _location_data_key(location)
 
+              # None means SmartHub never finished the request (still PENDING
+              # after MAX_RETRIES, or an unexpected status) - the data exists but
+              # was not ready. That is not "no usage": writing 0 would make the
+              # sensor dip and recover. Keep the last good value instead, and
+              # only fail the update if there is nothing to keep.
+              if data is None:
+                  previous = (self.data or {}).get(data_key)
+                  if previous is None:
+                      raise UpdateFailed(
+                          f"SmartHub did not finish the request for location {location}"
+                      )
+                  _LOGGER.warning(
+                      "SmartHub did not finish the request for location %s - keeping the last reading",
+                      location,
+                  )
+                  entity_response[data_key] = previous
+                  continue
+
               if data.get("USAGE", None) is None or len(data.get("USAGE", None)) == 0:
                   _LOGGER.warning("No data received from SmartHub API for location %s", location)
                   # Return previous data if available, otherwise empty dict
@@ -265,6 +283,8 @@ class SmartHubDataUpdateCoordinator(DataUpdateCoordinator):
         except SmartHubAPIError as e:
             _LOGGER.error("Error fetching data from SmartHub API: %s", e)
             raise UpdateFailed(f"Error communicating with SmartHub API: {e}") from e
+        except UpdateFailed:
+            raise
         except Exception as e:
             _LOGGER.exception("Unexpected error fetching SmartHub data: %s", e)
             raise UpdateFailed(f"Unexpected error: {e}") from e
@@ -408,8 +428,10 @@ class SmartHubDataUpdateCoordinator(DataUpdateCoordinator):
             # Initialize with last HISTORICAL_IMPORT_DAYS (usually 90) days of data
             start_datetime = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=HISTORICAL_IMPORT_DAYS)
 
-            # Load read data for use in populating statistics
-            smarthub_data = await self.api.get_energy_data(location=location, aggregation=aggregation, start_datetime=start_datetime)
+            # Load read data for use in populating statistics. None (SmartHub never
+            # finished the request) imports nothing; the next poll is still a first
+            # run and tries again.
+            smarthub_data = await self.api.get_energy_data(location=location, aggregation=aggregation, start_datetime=start_datetime) or {}
         else:
             _LOGGER.debug("Checking if data migration is needed for %s...", aggregation.label)
             migrated = False
